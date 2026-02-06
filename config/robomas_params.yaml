@@ -1,0 +1,199 @@
+robomas_node:
+  ros__parameters:
+    port_name: "/dev/ttyACM0"
+    baud_rate: 115200 # USB CDCなら無視されるが念のため
+    publish_rate: 100 # Hz (10ms)
+    
+    # PID設定 (motor0 〜 motor15)
+    # ここに16台分書きます
+    motor0:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor1:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+
+    motor2:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor3:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+
+    motor4:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor5:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+
+    motor6:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor7:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+
+    motor8:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor9:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+
+    motor10:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor11:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+
+    motor12:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor13:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+
+    motor14:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
+    
+    motor15:
+      speed_kp: 10.0
+      speed_ki: 0.1
+      speed_kd: 0.0
+      speed_i_limit: 1000.0
+      speed_limit: 20000.0
+      pos_kp: 5.0
+      pos_ki: 0.0
+      pos_kd: 0.0
+      pos_i_limit: 0.0
+      pos_limit: 5000.0
