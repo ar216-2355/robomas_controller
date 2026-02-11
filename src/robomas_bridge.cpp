@@ -1,4 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -7,6 +8,7 @@
 #include <vector>
 #include <cstring>
 #include <algorithm> 
+#include <cerrno> // ★追加: errno, EAGAIN などの定義を使うため
 
 #include "std_msgs/msg/bool.hpp"
 #include "robomas_interfaces/msg/robomas_packet.hpp"
@@ -32,6 +34,9 @@ public:
         }
 
         load_pid_params();
+
+        param_subscriber_ = this->add_on_set_parameters_callback(
+        std::bind(&RobomasBridge::param_callback, this, std::placeholders::_1));
 
         // --- Pub/Sub設定 ---
         pub_feedback_ = this->create_publisher<robomas_interfaces::msg::RobomasFrame>("robomas/feedback", 10);
@@ -70,6 +75,8 @@ private:
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_emergency_;
     rclcpp::TimerBase::SharedPtr control_timer_;
     rclcpp::TimerBase::SharedPtr display_timer_;
+
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_subscriber_;
 
     // -----------------------------------------------------------------
     // シリアルポート設定
@@ -159,6 +166,14 @@ private:
 
         process_serial_read();
 
+        // ★追加: マイコンがEMERGENCYモード(0)の時は、PC側の目標値も強制的にリセット（脱力）
+        if (last_feedback_.system_state == 0) {
+            for (int i = 0; i < 16; i++) {
+                current_targets_[i].mode = 3;     // 無効モード(脱力)
+                current_targets_[i].target = 0.0; // 目標値0
+            }
+        }
+
         // ★ハンドシェイク: 全ビット(FFFF)が立つまではPID設定を送る
         if (current_pid_mask_ != 0xFFFF) {
             static int retry_count = 0;
@@ -191,7 +206,27 @@ private:
     void process_serial_read() {
         uint8_t tmp_buf[256];
         int n = read(serial_fd_, tmp_buf, sizeof(tmp_buf));
-        if (n > 0) rx_buf_.insert(rx_buf_.end(), tmp_buf, tmp_buf + n);
+
+        if (n > 0) {
+            // 正常にデータを受信
+            rx_buf_.insert(rx_buf_.end(), tmp_buf, tmp_buf + n);
+        } 
+        else if (n == 0) {
+            // ★追加: USBケーブルが物理的に抜かれた (EOF検知)
+            RCLCPP_ERROR(this->get_logger(), "CRITICAL: USB disconnected! Shutting down node...");
+            rclcpp::shutdown(); // ROS 2ノードを終了
+            return;
+        } 
+        else if (n < 0) {
+            // ★追加: エラー検知
+            // O_NDELAY を設定しているため、単に「まだデータが来ていない」時は EAGAIN が返る。これは正常。
+            // それ以外の致命的なハードウェアエラー(EIOなど)が起きたら終了する。
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                RCLCPP_ERROR(this->get_logger(), "CRITICAL: Serial read error (%s). Shutting down...", strerror(errno));
+                rclcpp::shutdown();
+                return;
+            }
+        }
 
         while (rx_buf_.size() >= 2) {
             uint16_t header = (rx_buf_[1] << 8) | rx_buf_[0]; // Little Endian
@@ -300,6 +335,52 @@ private:
             sum += p[i]; // uint8として足す
         }
         return sum;
+    }
+
+    // -----------------------------------------------------------------
+    // 動的パラメータ変更時のコールバック
+    // -----------------------------------------------------------------
+    rcl_interfaces::msg::SetParametersResult param_callback(const std::vector<rclcpp::Parameter> &parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+
+        for (const auto &param : parameters) {
+            std::string name = param.get_name();
+            
+            // name は "motor0.speed_kp" のような形式
+            if (name.find("motor") == 0) {
+                size_t dot_pos = name.find('.');
+                if (dot_pos != std::string::npos) {
+                    try {
+                        int idx = std::stoi(name.substr(5, dot_pos - 5)); // "motor"の後の数字
+                        std::string p_name = name.substr(dot_pos + 1);    // "."の後の文字列
+
+                        if (idx >= 0 && idx < 16) {
+                            // パラメータを構造体に上書き
+                            if (p_name == "speed_kp") pid_configs_[idx].speed_kp = param.as_double();
+                            else if (p_name == "speed_ki") pid_configs_[idx].speed_ki = param.as_double();
+                            else if (p_name == "speed_kd") pid_configs_[idx].speed_kd = param.as_double();
+                            else if (p_name == "speed_i_limit") pid_configs_[idx].speed_i_limit = param.as_double();
+                            else if (p_name == "speed_limit") pid_configs_[idx].speed_output_limit = param.as_double();
+                            else if (p_name == "pos_kp") pid_configs_[idx].position_kp = param.as_double();
+                            else if (p_name == "pos_ki") pid_configs_[idx].position_ki = param.as_double();
+                            else if (p_name == "pos_kd") pid_configs_[idx].position_kd = param.as_double();
+                            else if (p_name == "pos_i_limit") pid_configs_[idx].position_i_limit = param.as_double();
+                            else if (p_name == "pos_limit") pid_configs_[idx].position_output_limit = param.as_double();
+
+                            // ★ここが超重要！ 更新されたモーターのマスクのビットを「0」に戻す
+                            // これにより、メインループが自動的にSTM32へ再設定パケット(CMD_SET_PID)を送ります
+                            current_pid_mask_ &= ~(1 << idx);
+                            
+                            // (printfの表示を崩さないため、ここはあえてログを出さないか、DEBUGにしておく)
+                        }
+                    } catch (...) {
+                        // 変換エラー等は無視
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     // -----------------------------------------------------------------
