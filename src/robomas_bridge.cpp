@@ -6,15 +6,14 @@
 #include <iostream>
 #include <vector>
 #include <cstring>
+#include <algorithm> 
 
 #include "std_msgs/msg/bool.hpp"
-
-// カスタムメッセージ
 #include "robomas_interfaces/msg/robomas_packet.hpp"
 #include "robomas_interfaces/msg/robomas_frame.hpp"
 #include "robomas_interfaces/msg/can_frame.hpp"
 
-// 共通ヘッダ (STM32と同じもの)
+// ★ここに提示されたヘッダーファイルの内容が入っている前提
 #include "usb_packet.hpp" 
 
 using namespace std::chrono_literals;
@@ -22,21 +21,21 @@ using namespace std::chrono_literals;
 class RobomasBridge : public rclcpp::Node {
 public:
     RobomasBridge() : Node("robomas_node") {
-        // パラメータ読み込み
+        RCLCPP_INFO(this->get_logger(), "Sizeof FB Packet: %lu", sizeof(USBFeedbackPacket));
+        // --- パラメータ設定 ---
         this->declare_parameter("port_name", "/dev/ttyACM0");
         std::string port_name = this->get_parameter("port_name").as_string();
         
-        // シリアルポートを開く
         if (!open_serial(port_name)) {
             RCLCPP_ERROR(this->get_logger(), "Failed to open serial port: %s", port_name.c_str());
-            return; // エラー処理
+            return; 
         }
 
-        // パラメータからPID設定を読み込む
         load_pid_params();
 
-        // Publisher / Subscriber
+        // --- Pub/Sub設定 ---
         pub_feedback_ = this->create_publisher<robomas_interfaces::msg::RobomasFrame>("robomas/feedback", 10);
+        pub_can_rx_   = this->create_publisher<robomas_interfaces::msg::CanFrame>("robomas/can_rx", 10);
         
         sub_cmd_ = this->create_subscription<robomas_interfaces::msg::RobomasPacket>(
             "robomas/cmd", 10, std::bind(&RobomasBridge::cmd_callback, this, std::placeholders::_1));
@@ -44,43 +43,36 @@ public:
         sub_can_ = this->create_subscription<robomas_interfaces::msg::CanFrame>(
             "robomas/can_tx", 10, std::bind(&RobomasBridge::can_callback, this, std::placeholders::_1));
 
-        pub_can_rx_ = this->create_publisher<robomas_interfaces::msg::CanFrame>("robomas/can_rx", 10);
-
         sub_emergency_ = this->create_subscription<std_msgs::msg::Bool>(
             "robomas/emergency", 10, std::bind(&RobomasBridge::emergency_callback, this, std::placeholders::_1));
 
-        // タイマー
-        // 1. 制御周期 (10ms): マイコンへ駆動指令を送る & 受信データチェック
+        // --- タイマー設定 ---
         control_timer_ = this->create_wall_timer(10ms, std::bind(&RobomasBridge::control_loop, this));
-        
-        // 2. ターミナル表示 (100ms)
-        display_timer_ = this->create_wall_timer(100ms, std::bind(&RobomasBridge::display_loop, this));
+        display_timer_ = this->create_wall_timer(200ms, std::bind(&RobomasBridge::display_loop, this));
 
-        RCLCPP_INFO(this->get_logger(), "Robomas Controller Started.");
+        RCLCPP_INFO(this->get_logger(), "Robomas Controller Started (Full Spec).");
     }
 
 private:
     int serial_fd_ = -1;
-    USBCtrlPacket tx_packet_; // 送信用バッファ
-    MotorUnit current_targets_[16]; // 現在の目標値を保持
-
-    // ハンドシェイク用
+    std::vector<uint8_t> rx_buf_;
+    
+    MotorUnit current_targets_[16];
     std::vector<PIDConfig> pid_configs_;
-    uint16_t current_pid_mask_ = 0;
+    
+    USBFeedbackPacket last_feedback_;
+    uint16_t current_pid_mask_ = 0; // ハンドシェイク用
 
     rclcpp::Publisher<robomas_interfaces::msg::RobomasFrame>::SharedPtr pub_feedback_;
+    rclcpp::Publisher<robomas_interfaces::msg::CanFrame>::SharedPtr pub_can_rx_;
     rclcpp::Subscription<robomas_interfaces::msg::RobomasPacket>::SharedPtr sub_cmd_;
     rclcpp::Subscription<robomas_interfaces::msg::CanFrame>::SharedPtr sub_can_;
-    rclcpp::Publisher<robomas_interfaces::msg::CanFrame>::SharedPtr pub_can_rx_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_emergency_;
     rclcpp::TimerBase::SharedPtr control_timer_;
     rclcpp::TimerBase::SharedPtr display_timer_;
-    
-    // 最新のフィードバックデータ保持用
-    USBFeedbackPacket last_feedback_;
 
     // -----------------------------------------------------------------
-    // 初期化・パラメータ読み込み
+    // シリアルポート設定
     // -----------------------------------------------------------------
     bool open_serial(const std::string& port) {
         serial_fd_ = open(port.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
@@ -88,260 +80,307 @@ private:
         
         struct termios options;
         tcgetattr(serial_fd_, &options);
+
+        // --- ここから修正 ---
+        
+        // 入力フラグ (Input Flags)
+        // ICRNL: CR(0x0D) を NL(0x0A) に変換しない (重要！)
+        // IXON/IXOFF: ソフトウェアフロー制御(Ctrl+S/Q)を無効化 (重要！)
+        options.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+
+        // 出力フラグ (Output Flags)
+        // OPOST: 出力処理(改行変換など)を無効化
+        options.c_oflag &= ~OPOST;
+
+        // ローカルフラグ (Local Flags)
+        // ICANON: カノニカルモード(行単位入力)を無効化
+        // ECHO: エコーバック無効化
+        // ISIG: シグナル文字(Ctrl+Cなど)を無効化
+        options.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+
+        // 制御フラグ (Control Flags)
+        // CSIZE: 文字サイズマスククリア
+        // PARENB: パリティなし
+        // CSTOPB: ストップビット1
+        // CS8: 8ビット通信
+        options.c_cflag &= ~(CSIZE | PARENB);
+        options.c_cflag |= CS8;
+        
+        // --- 修正ここまで ---
+
+        // ボーレート設定 (USB CDCなので実は何でも良いが設定しておく)
         cfsetispeed(&options, B115200);
         cfsetospeed(&options, B115200);
-        options.c_cflag |= (CLOCAL | CREAD);
-        options.c_cflag &= ~PARENB;
-        options.c_cflag &= ~CSTOPB;
-        options.c_cflag &= ~CSIZE;
-        options.c_cflag |= CS8;
-        options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG); // Raw mode
+
+        // 設定を即時反映
         tcsetattr(serial_fd_, TCSANOW, &options);
+        tcflush(serial_fd_, TCIFLUSH);
         return true;
     }
 
+    // -----------------------------------------------------------------
+    // PIDパラメータ読み込み
+    // -----------------------------------------------------------------
     void load_pid_params() {
         for(int i=0; i<16; i++) {
             std::string prefix = "motor" + std::to_string(i);
-            // パラメータ宣言と取得 (エラー処理は省略)
             PIDConfig cfg;
-            cfg.motor_id = i;
+            cfg.motor_id = i + 1; // 1-16 (マイコン側実装に合わせる)
             
             auto get_p = [&](std::string name, float def) {
                 this->declare_parameter(prefix + "." + name, def);
                 return (float)this->get_parameter(prefix + "." + name).as_double();
             };
 
-            cfg.speed_kp = get_p("speed_kp", 0.0);
+            cfg.speed_kp = get_p("speed_kp", 1.0);
             cfg.speed_ki = get_p("speed_ki", 0.0);
             cfg.speed_kd = get_p("speed_kd", 0.0);
-            cfg.speed_i_limit = get_p("speed_i_limit", 0.0);
-            cfg.speed_output_limit = get_p("speed_limit", 16000.0);
+            cfg.speed_i_limit = get_p("speed_i_limit", 1000.0);
+            cfg.speed_output_limit = get_p("speed_limit", 16384.0);
             
-            cfg.position_kp = get_p("pos_kp", 0.0);
-            // ... (他も同様に) ...
+            cfg.position_kp = get_p("pos_kp", 1.0);
+            cfg.position_ki = get_p("pos_ki", 0.0);
+            cfg.position_kd = get_p("pos_kd", 0.0);
+            cfg.position_i_limit = get_p("pos_i_limit", 0.0);
+            cfg.position_output_limit = get_p("pos_limit", 5000.0);
             
             pid_configs_.push_back(cfg);
+            
+            current_targets_[i].mode = 0; 
+            current_targets_[i].target = 0.0f;
         }
     }
 
     // -----------------------------------------------------------------
-    // 受信コールバック (ROSトピック -> 内部バッファ)
-    // -----------------------------------------------------------------
-    void cmd_callback(const robomas_interfaces::msg::RobomasPacket::SharedPtr msg) {
-        // 送られてきたリストの分だけ回す
-        for (const auto& cmd : msg->motors) {
-            // IDチェック (1〜16以外は無視)
-            if (cmd.motor_id >= 1 && cmd.motor_id <= 16) {
-                int index = cmd.motor_id - 1; // 配列インデックス(0-15)に変換
-
-                current_targets_[index].mode = cmd.mode;
-                current_targets_[index].target = cmd.target;
-            } else {
-                RCLCPP_WARN(this->get_logger(), "Invalid Motor ID: %d", cmd.motor_id);
-            }
-        }
-    }
-
-    void can_callback(const robomas_interfaces::msg::CanFrame::SharedPtr msg) {
-        // CAN送信要求が来たら、即座にシリアルへ書き込む
-        USBCtrlPacket pkt;
-        memset(&pkt, 0, sizeof(pkt));
-        pkt.header = 0xA5A5;
-        pkt.command_id = CMD_SEND_CAN;
-        pkt.payload.can_tx.can_id = msg->id;
-        pkt.payload.can_tx.dlc = msg->dlc;
-        memcpy(pkt.payload.can_tx.data, msg->data.data(), 8);
-        pkt.checksum = calc_checksum(&pkt);
-        
-        write(serial_fd_, &pkt, sizeof(pkt));
-    }
-
-    // -----------------------------------------------------------------
-    // 緊急停止・解除 コールバック
-    // -----------------------------------------------------------------
-    void emergency_callback(const std_msgs::msg::Bool::SharedPtr msg) {
-        USBCtrlPacket pkt;
-        memset(&pkt, 0, sizeof(pkt));
-        pkt.header = 0xA5A5;
-        
-        if (msg->data == true) {
-            // true = 緊急停止要求
-            pkt.command_id = CMD_EMERGENCY_STOP;
-            RCLCPP_WARN(this->get_logger(), "SENDING EMERGENCY STOP!");
-        } else {
-            // false = 緊急停止解除 (Reset)
-            pkt.command_id = CMD_RESET_EMERGENCY;
-            RCLCPP_INFO(this->get_logger(), "SENDING EMERGENCY RESET.");
-        }
-        
-        pkt.checksum = calc_checksum(&pkt);
-        write(serial_fd_, &pkt, sizeof(pkt));
-    }
-
-    // -----------------------------------------------------------------
-    // メインループ (10ms)
+    // メイン制御ループ (10ms)
     // -----------------------------------------------------------------
     void control_loop() {
         if (serial_fd_ < 0) return;
 
-        // バッファにあるデータを可能な限り処理するループ
-        // (1回の周期で複数のパケットが来ている可能性があるため)
-        while (true) {
-            uint8_t header_buf[2];
-            // 1. まずヘッダー2バイトだけを読みに行く (Peeking)
-            // ※実際はread()してしまうとバッファから消えるので、処理フローで工夫する
-            //   ここでは簡易的に、1バイトずつ読んでヘッダーを探すステートマシンが確実ですが、
-            //   LinuxのSerial設定で VMIN=0, VTIME=0 (ポーリング) になっているので、
-            //   ヘッダーが見つかるまで回す実装例にします。
-            
-            int n = read(serial_fd_, header_buf, 2);
-            if (n < 2) break; // データなし、または断片
+        process_serial_read();
 
-            uint16_t header = (header_buf[1] << 8) | header_buf[0]; // Little Endian
-
-            if (header == 0x5A5A) {
-                // --- A. ロボマスフィードバック (残りサイズ: 182byte程度) ---
-                // ※ usb_packet.hpp の定義サイズ - 2byte
-                const int remain_size = sizeof(USBFeedbackPacket) - 2;
-                uint8_t body[remain_size];
-                
-                int m = read_blocking(body, remain_size); // 残りを確実に読む関数が必要
-                if (m == remain_size) {
-                    // データを結合してキャスト
-                    USBFeedbackPacket pkt;
-                    pkt.header = header;
-                    memcpy(((uint8_t*)&pkt)+2, body, remain_size);
-                    
-                    last_feedback_ = pkt;
-                    current_pid_mask_ = pkt.pid_configured_mask;
-                    publish_status();
-                }
-            }
-            else if (header == 0xCACA) {
-                // --- B. CAN受信パケット (残りサイズ: 15byte程度) ---
-                const int remain_size = sizeof(USBCanForwardPacket) - 2;
-                uint8_t body[remain_size];
-
-                int m = read_blocking(body, remain_size);
-                if (m == remain_size) {
-                    USBCanForwardPacket pkt;
-                    pkt.header = header;
-                    memcpy(((uint8_t*)&pkt)+2, body, remain_size);
-
-                    // ROSトピックへPublish
-                    auto msg = robomas_interfaces::msg::CanFrame();
-                    msg.id = pkt.can_id;
-                    msg.dlc = pkt.dlc;
-                    for(int i=0; i<8; i++) msg.data[i] = pkt.data[i];
-                    pub_can_rx_->publish(msg);
-                }
-            }
-            else {
-                // 知らないヘッダー、または1バイトズレている
-                // 1バイト戻して（読み捨てて）再試行すべきだが、
-                // 簡易実装では「ヘッダーの2バイト目」を次の「1バイト目」として扱うなどの工夫が必要。
-                // ここではシンプルに1バイト読み進める
-                lseek(serial_fd_, -1, SEEK_CUR); 
-            }
-        }
-
-        // 2. ハンドシェイク処理 (PID設定)
+        // ★ハンドシェイク: 全ビット(FFFF)が立つまではPID設定を送る
         if (current_pid_mask_ != 0xFFFF) {
-            // まだ設定されていないモーターがある場合、PID設定パケットを送る
+            static int retry_count = 0;
+            retry_count++;
+            
+            // if (retry_count % 100 == 0) { // 1秒に1回ログ
+            //     RCLCPP_WARN(this->get_logger(), "Handshaking... Mask: %04X", current_pid_mask_);
+            // }
+
             for (int i = 0; i < 16; i++) {
                 if (!((current_pid_mask_ >> i) & 1)) {
                     send_pid_config(i);
-                    // 一度に全部送ると詰まる可能性があるので、1ループ数個にするか
-                    // ここではシンプルにループごとに未設定を全部送る
+
+                    break;
                 }
             }
-            return; // 設定中は駆動コマンドを送らない方が安全
+            return; // 設定完了まで駆動コマンドは送らない
         }
 
-        // 3. 駆動指令送信
+        // 通常駆動
         send_drive_command();
     }
 
     // -----------------------------------------------------------------
-    // 送信ヘルパー
+    // シリアル受信処理
+    // -----------------------------------------------------------------
+// -----------------------------------------------------------------
+    // シリアル受信処理（修正版）
+    // -----------------------------------------------------------------
+    void process_serial_read() {
+        uint8_t tmp_buf[256];
+        int n = read(serial_fd_, tmp_buf, sizeof(tmp_buf));
+        if (n > 0) rx_buf_.insert(rx_buf_.end(), tmp_buf, tmp_buf + n);
+
+        while (rx_buf_.size() >= 2) {
+            uint16_t header = (rx_buf_[1] << 8) | rx_buf_[0]; // Little Endian
+
+            if (header == 0x5A5A) {
+                // [A] フィードバックパケット (184 bytes)
+                size_t pkt_size = sizeof(USBFeedbackPacket);
+                
+                // データが足りない場合は待つ
+                if (rx_buf_.size() < pkt_size) break;
+
+                USBFeedbackPacket pkt;
+                memcpy(&pkt, rx_buf_.data(), pkt_size);
+                
+                // チェックサム確認
+                if (calc_checksum_fb(&pkt) == pkt.checksum) {
+                    // 成功：データを採用し、パケット分を消費する
+                    last_feedback_ = pkt;
+                    current_pid_mask_ = pkt.pid_configured_mask;
+                    publish_feedback();
+                    
+                    rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + pkt_size);
+                } else {
+                    // 失敗：ヘッダーだと思ったが間違いだった（または破損）
+                    // ★重要：パケット全部ではなく「1バイトだけ」進めて再検索する
+                    // RCLCPP_WARN(this->get_logger(), "Checksum Error (FB) - Skipping 1 byte");
+                    rx_buf_.erase(rx_buf_.begin());
+                }
+            } 
+            else if (header == 0xCACA) {
+                // [B] CAN転送パケット (例: 15 bytes)
+                size_t pkt_size = sizeof(USBCanForwardPacket);
+                
+                if (rx_buf_.size() < pkt_size) break;
+
+                USBCanForwardPacket pkt;
+                memcpy(&pkt, rx_buf_.data(), pkt_size);
+                
+                // CAN転送はチェックサムなし、または同様にチェックするならここに記述
+                auto msg = robomas_interfaces::msg::CanFrame();
+                msg.id = pkt.can_id;
+                msg.dlc = pkt.dlc;
+                for(int i=0; i<8; i++) msg.data[i] = pkt.data[i];
+                pub_can_rx_->publish(msg);
+
+                // 成功として消費
+                rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + pkt_size);
+            }
+            else {
+                // ヘッダー不一致：1バイト読み捨てて次を探す
+                rx_buf_.erase(rx_buf_.begin()); 
+            }
+        }
+        
+        // バッファ溢れ防止
+        if (rx_buf_.size() > 4096) rx_buf_.clear();
+    }
+    // -----------------------------------------------------------------
+    // 送信コマンド作成
     // -----------------------------------------------------------------
     void send_drive_command() {
         USBCtrlPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
         pkt.header = 0xA5A5;
-        pkt.command_id = CMD_DRIVE_ALL;
+        pkt.command_id = CMD_DRIVE_ALL; // 0x01
         
         for(int i=0; i<16; i++) {
             pkt.payload.drive[i] = current_targets_[i];
         }
-        pkt.checksum = calc_checksum(&pkt);
+        
+        pkt.checksum = calc_checksum_ctrl(&pkt);
         write(serial_fd_, &pkt, sizeof(pkt));
     }
 
-    void send_pid_config(int id) {
+    void send_pid_config(int index) {
+        if (index < 0 || index >= 16) return;
+        
         USBCtrlPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
         pkt.header = 0xA5A5;
-        pkt.command_id = CMD_SET_PID;
-        pkt.payload.pid = pid_configs_[id];
-        pkt.checksum = calc_checksum(&pkt);
+        pkt.command_id = CMD_SET_PID; // 0x02
+        pkt.payload.pid = pid_configs_[index];
+        
+        pkt.checksum = calc_checksum_ctrl(&pkt);
         write(serial_fd_, &pkt, sizeof(pkt));
     }
     
-    uint16_t calc_checksum(USBCtrlPacket* pkt) {
+    // -----------------------------------------------------------------
+    // チェックサム計算
+    // -----------------------------------------------------------------
+    uint16_t calc_checksum_ctrl(USBCtrlPacket* pkt) {
         uint16_t sum = 0;
         uint8_t* p = (uint8_t*)pkt;
-        for(size_t i=0; i<sizeof(USBCtrlPacket)-2; i++) sum += p[i];
+        // 末尾のchecksum(2byte)を除いて加算
+        for(size_t i=0; i < sizeof(USBCtrlPacket) - 2; i++) {
+            sum += p[i]; // uint8として足す
+        }
+        return sum;
+    }
+
+    uint16_t calc_checksum_fb(USBFeedbackPacket* pkt) {
+        uint16_t sum = 0;
+        uint8_t* p = (uint8_t*)pkt;
+        // 末尾のchecksum(2byte)を除いて加算
+        for(size_t i=0; i < sizeof(USBFeedbackPacket) - 2; i++) {
+            sum += p[i]; // uint8として足す
+        }
         return sum;
     }
 
     // -----------------------------------------------------------------
-    // 表示・Publish関連
+    // ROS コールバック & Publish
     // -----------------------------------------------------------------
-    void publish_status() {
+    void cmd_callback(const robomas_interfaces::msg::RobomasPacket::SharedPtr msg) {
+        for (const auto& cmd : msg->motors) {
+            if (cmd.motor_id >= 1 && cmd.motor_id <= 16) {
+                int index = cmd.motor_id - 1; 
+                current_targets_[index].mode = cmd.mode;
+                current_targets_[index].target = cmd.target;
+            }
+        }
+    }
+
+    void can_callback(const robomas_interfaces::msg::CanFrame::SharedPtr msg) {
+        USBCtrlPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header = 0xA5A5;
+        pkt.command_id = CMD_SEND_CAN; // 0x03
+        
+        pkt.payload.can_tx.can_id = msg->id;
+        pkt.payload.can_tx.dlc = msg->dlc;
+        memcpy(pkt.payload.can_tx.data, msg->data.data(), 8);
+        
+        pkt.checksum = calc_checksum_ctrl(&pkt);
+        write(serial_fd_, &pkt, sizeof(pkt));
+    }
+    
+    void emergency_callback(const std_msgs::msg::Bool::SharedPtr msg) {
+        USBCtrlPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header = 0xA5A5;
+        
+        if (msg->data) {
+            pkt.command_id = CMD_EMERGENCY_STOP; // 0x00
+            RCLCPP_WARN(this->get_logger(), "EMERGENCY STOP SENT");
+        } else {
+            pkt.command_id = CMD_RESET_EMERGENCY; // 0x04 (定義あり！)
+            RCLCPP_INFO(this->get_logger(), "EMERGENCY RESET SENT");
+        }
+        
+        pkt.checksum = calc_checksum_ctrl(&pkt);
+        write(serial_fd_, &pkt, sizeof(pkt));
+    }
+
+    void publish_feedback() {
         auto msg = robomas_interfaces::msg::RobomasFrame();
         msg.header.stamp = this->now();
-        msg.system_state = last_feedback_.system_state;
-        msg.pid_configured_mask = last_feedback_.pid_configured_mask;
+        
+        msg.system_state = last_feedback_.system_state;       // 定義あり
+        msg.pid_configured_mask = last_feedback_.pid_configured_mask; // 定義あり
         
         for(int i=0; i<16; i++) {
             msg.angle[i]    = last_feedback_.motors[i].angle;
             msg.velocity[i] = last_feedback_.motors[i].velocity;
-            // 以下を追加
-            msg.torque[i]   = last_feedback_.motors[i].torque;
-            msg.temp[i]     = last_feedback_.motors[i].temp;
+            msg.torque[i]   = (float)last_feedback_.motors[i].torque; 
+            msg.temp[i]     = (float)last_feedback_.motors[i].temp;   
         }
         pub_feedback_->publish(msg);
     }
 
     void display_loop() {
-        // ターミナル表示 (エスケープシーケンスで画面クリアすると綺麗)
-        printf("\033[H\033[J"); // Clear Screen
-        printf("=== Robomas Controller ===\n");
-        printf("State: %d, PID Mask: %04X\n", last_feedback_.system_state, current_pid_mask_);
-        printf("ID | Mode | Target |  FB Vel  |  FB Pos  \n");
-        printf("---|------|--------|----------|----------\n");
+        printf("\033[H\033[J");
+        printf("=== Robomas Controller (State: %d) ===\n", last_feedback_.system_state);
+        printf("PID Mask: %04X (Target: FFFF)\n", current_pid_mask_);
+        printf("ID | Mode | Target |  FB Vel  |  FB Pos  | Torque | Temp \n");
+        printf("---|------|--------|----------|----------|--------|------\n");
         for(int i=0; i<16; i++) {
-             printf("%2d |  %d   | %6.1f | %8.1f | %8.1f \n", 
-                i, current_targets_[i].mode, current_targets_[i].target,
-                last_feedback_.motors[i].velocity, last_feedback_.motors[i].angle);
+             printf("%2d |  %d   | %6.1f | %8.1f | %8.1f | %6d | %3d \n", 
+                i+1, 
+                current_targets_[i].mode, 
+                current_targets_[i].target,
+                last_feedback_.motors[i].velocity, 
+                last_feedback_.motors[i].angle,
+                last_feedback_.motors[i].torque,
+                last_feedback_.motors[i].temp
+            );
         }
-    }
 
-    // 補助関数: 指定バイト数読み切るまでブロックする（タイムアウト付き推奨）
-    int read_blocking(uint8_t* buf, int len) {
-        int total = 0;
-        int timeout = 100; // 安全策
-        while (total < len && timeout > 0) {
-            int r = read(serial_fd_, buf + total, len - total);
-            if (r > 0) total += r;
-            else {
-                usleep(100); // ちょっと待つ
-                timeout--;
-            }
-        }
-        return total;
+        fflush(stdout);
     }
 };
 
