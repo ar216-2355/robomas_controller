@@ -8,14 +8,14 @@
 #include <vector>
 #include <cstring>
 #include <algorithm> 
-#include <cerrno> // ★追加: errno, EAGAIN などの定義を使うため
+#include <cerrno>
 
 #include "std_msgs/msg/bool.hpp"
 #include "robomas_interfaces/msg/robomas_packet.hpp"
 #include "robomas_interfaces/msg/robomas_frame.hpp"
 #include "robomas_interfaces/msg/can_frame.hpp"
 
-// ★ここに提示されたヘッダーファイルの内容が入っている前提
+// ヘッダーファイルの内容が入っている前提
 #include "usb_packet.hpp" 
 
 using namespace std::chrono_literals;
@@ -24,6 +24,7 @@ class RobomasBridge : public rclcpp::Node {
 public:
     RobomasBridge() : Node("robomas_node") {
         RCLCPP_INFO(this->get_logger(), "Sizeof FB Packet: %lu", sizeof(USBFeedbackPacket));
+        
         // --- パラメータ設定 ---
         this->declare_parameter("port_name", "/dev/ttyACM0");
         std::string port_name = this->get_parameter("port_name").as_string();
@@ -36,7 +37,7 @@ public:
         load_pid_params();
 
         param_subscriber_ = this->add_on_set_parameters_callback(
-        std::bind(&RobomasBridge::param_callback, this, std::placeholders::_1));
+            std::bind(&RobomasBridge::param_callback, this, std::placeholders::_1));
 
         // --- Pub/Sub設定 ---
         pub_feedback_ = this->create_publisher<robomas_interfaces::msg::RobomasFrame>("robomas/feedback", 10);
@@ -55,7 +56,7 @@ public:
         control_timer_ = this->create_wall_timer(10ms, std::bind(&RobomasBridge::control_loop, this));
         display_timer_ = this->create_wall_timer(200ms, std::bind(&RobomasBridge::display_loop, this));
 
-        RCLCPP_INFO(this->get_logger(), "Robomas Controller Started (Full Spec).");
+        RCLCPP_INFO(this->get_logger(), "Robomas Controller Started (Full Spec / M3508 Scaled).");
     }
 
 private:
@@ -88,38 +89,20 @@ private:
         struct termios options;
         tcgetattr(serial_fd_, &options);
 
-        // --- ここから修正 ---
-        
         // 入力フラグ (Input Flags)
-        // ICRNL: CR(0x0D) を NL(0x0A) に変換しない (重要！)
-        // IXON/IXOFF: ソフトウェアフロー制御(Ctrl+S/Q)を無効化 (重要！)
         options.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
-
         // 出力フラグ (Output Flags)
-        // OPOST: 出力処理(改行変換など)を無効化
         options.c_oflag &= ~OPOST;
-
         // ローカルフラグ (Local Flags)
-        // ICANON: カノニカルモード(行単位入力)を無効化
-        // ECHO: エコーバック無効化
-        // ISIG: シグナル文字(Ctrl+Cなど)を無効化
         options.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-
         // 制御フラグ (Control Flags)
-        // CSIZE: 文字サイズマスククリア
-        // PARENB: パリティなし
-        // CSTOPB: ストップビット1
-        // CS8: 8ビット通信
         options.c_cflag &= ~(CSIZE | PARENB);
         options.c_cflag |= CS8;
         
-        // --- 修正ここまで ---
-
-        // ボーレート設定 (USB CDCなので実は何でも良いが設定しておく)
+        // ボーレート設定
         cfsetispeed(&options, B115200);
         cfsetospeed(&options, B115200);
 
-        // 設定を即時反映
         tcsetattr(serial_fd_, TCSANOW, &options);
         tcflush(serial_fd_, TCIFLUSH);
         return true;
@@ -132,7 +115,7 @@ private:
         for(int i=0; i<16; i++) {
             std::string prefix = "motor" + std::to_string(i);
             PIDConfig cfg;
-            cfg.motor_id = i + 1; // 1-16 (マイコン側実装に合わせる)
+            cfg.motor_id = i + 1;
             
             auto get_p = [&](std::string name, float def) {
                 this->declare_parameter(prefix + "." + name, def);
@@ -166,7 +149,7 @@ private:
 
         process_serial_read();
 
-        // ★追加: マイコンがEMERGENCYモード(0)の時は、PC側の目標値も強制的にリセット（脱力）
+        // マイコンがEMERGENCYモード(0)の時は、PC側の目標値も強制的にリセット
         if (last_feedback_.system_state == 0) {
             for (int i = 0; i < 16; i++) {
                 current_targets_[i].mode = 3;     // 無効モード(脱力)
@@ -174,23 +157,18 @@ private:
             }
         }
 
-        // ★ハンドシェイク: 全ビット(FFFF)が立つまではPID設定を送る
+        // ハンドシェイク
         if (current_pid_mask_ != 0xFFFF) {
             static int retry_count = 0;
             retry_count++;
             
-            // if (retry_count % 100 == 0) { // 1秒に1回ログ
-            //     RCLCPP_WARN(this->get_logger(), "Handshaking... Mask: %04X", current_pid_mask_);
-            // }
-
             for (int i = 0; i < 16; i++) {
                 if (!((current_pid_mask_ >> i) & 1)) {
                     send_pid_config(i);
-
                     break;
                 }
             }
-            return; // 設定完了まで駆動コマンドは送らない
+            return;
         }
 
         // 通常駆動
@@ -200,27 +178,19 @@ private:
     // -----------------------------------------------------------------
     // シリアル受信処理
     // -----------------------------------------------------------------
-// -----------------------------------------------------------------
-    // シリアル受信処理（修正版）
-    // -----------------------------------------------------------------
     void process_serial_read() {
         uint8_t tmp_buf[256];
         int n = read(serial_fd_, tmp_buf, sizeof(tmp_buf));
 
         if (n > 0) {
-            // 正常にデータを受信
             rx_buf_.insert(rx_buf_.end(), tmp_buf, tmp_buf + n);
         } 
         else if (n == 0) {
-            // ★追加: USBケーブルが物理的に抜かれた (EOF検知)
             RCLCPP_ERROR(this->get_logger(), "CRITICAL: USB disconnected! Shutting down node...");
-            rclcpp::shutdown(); // ROS 2ノードを終了
+            rclcpp::shutdown();
             return;
         } 
         else if (n < 0) {
-            // ★追加: エラー検知
-            // O_NDELAY を設定しているため、単に「まだデータが来ていない」時は EAGAIN が返る。これは正常。
-            // それ以外の致命的なハードウェアエラー(EIOなど)が起きたら終了する。
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 RCLCPP_ERROR(this->get_logger(), "CRITICAL: Serial read error (%s). Shutting down...", strerror(errno));
                 rclcpp::shutdown();
@@ -229,63 +199,50 @@ private:
         }
 
         while (rx_buf_.size() >= 2) {
-            uint16_t header = (rx_buf_[1] << 8) | rx_buf_[0]; // Little Endian
+            uint16_t header = (rx_buf_[1] << 8) | rx_buf_[0];
 
             if (header == 0x5A5A) {
-                // [A] フィードバックパケット (184 bytes)
+                // [A] フィードバックパケット
                 size_t pkt_size = sizeof(USBFeedbackPacket);
-                
-                // データが足りない場合は待つ
                 if (rx_buf_.size() < pkt_size) break;
 
                 USBFeedbackPacket pkt;
                 memcpy(&pkt, rx_buf_.data(), pkt_size);
                 
-                // チェックサム確認
                 if (calc_checksum_fb(&pkt) == pkt.checksum) {
-                    // 成功：データを採用し、パケット分を消費する
                     last_feedback_ = pkt;
                     current_pid_mask_ = pkt.pid_configured_mask;
                     publish_feedback();
-                    
                     rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + pkt_size);
                 } else {
-                    // 失敗：ヘッダーだと思ったが間違いだった（または破損）
-                    // ★重要：パケット全部ではなく「1バイトだけ」進めて再検索する
-                    // RCLCPP_WARN(this->get_logger(), "Checksum Error (FB) - Skipping 1 byte");
                     rx_buf_.erase(rx_buf_.begin());
                 }
             } 
             else if (header == 0xCACA) {
-                // [B] CAN転送パケット (例: 15 bytes)
+                // [B] CAN転送パケット
                 size_t pkt_size = sizeof(USBCanForwardPacket);
-                
                 if (rx_buf_.size() < pkt_size) break;
 
                 USBCanForwardPacket pkt;
                 memcpy(&pkt, rx_buf_.data(), pkt_size);
                 
-                // CAN転送はチェックサムなし、または同様にチェックするならここに記述
                 auto msg = robomas_interfaces::msg::CanFrame();
                 msg.id = pkt.can_id;
                 msg.dlc = pkt.dlc;
                 for(int i=0; i<8; i++) msg.data[i] = pkt.data[i];
                 pub_can_rx_->publish(msg);
 
-                // 成功として消費
                 rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + pkt_size);
             }
             else {
-                // ヘッダー不一致：1バイト読み捨てて次を探す
                 rx_buf_.erase(rx_buf_.begin()); 
             }
         }
-        
-        // バッファ溢れ防止
         if (rx_buf_.size() > 4096) rx_buf_.clear();
     }
+
     // -----------------------------------------------------------------
-    // 送信コマンド作成
+    // 送信コマンド作成（★M3508スケール変換の実装箇所）
     // -----------------------------------------------------------------
     void send_drive_command() {
         USBCtrlPacket pkt;
@@ -294,7 +251,24 @@ private:
         pkt.command_id = CMD_DRIVE_ALL; // 0x01
         
         for(int i=0; i<16; i++) {
+            // 基本はROSからの指令値をそのままコピー
             pkt.payload.drive[i] = current_targets_[i];
+
+            // ★電流制御モード(0)の場合、温度を見てM3508ならスケール変換する
+            // M2006 (temp == 0): 10000mA -> 10000 (変換なし)
+            // M3508 (temp != 0): 20000mA -> 16384 (変換あり)
+            if (current_targets_[i].mode == 0) {
+                // ROSから来るのは mA単位 (例: 20000.0)
+                float ros_target_ma = current_targets_[i].target;
+                uint8_t temp = last_feedback_.motors[i].temp;
+
+                if (temp != 0) {
+                    // M3508の場合
+                    // 20000mA を 16384 に変換 (係数: 0.8192)
+                    pkt.payload.drive[i].target = ros_target_ma * (16384.0f / 20000.0f);
+                } 
+                // M2006 (temp==0) の場合は 10000mA = 10000 なのでそのまま
+            }
         }
         
         pkt.checksum = calc_checksum_ctrl(&pkt);
@@ -307,7 +281,7 @@ private:
         USBCtrlPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
         pkt.header = 0xA5A5;
-        pkt.command_id = CMD_SET_PID; // 0x02
+        pkt.command_id = CMD_SET_PID;
         pkt.payload.pid = pid_configs_[index];
         
         pkt.checksum = calc_checksum_ctrl(&pkt);
@@ -320,9 +294,8 @@ private:
     uint16_t calc_checksum_ctrl(USBCtrlPacket* pkt) {
         uint16_t sum = 0;
         uint8_t* p = (uint8_t*)pkt;
-        // 末尾のchecksum(2byte)を除いて加算
         for(size_t i=0; i < sizeof(USBCtrlPacket) - 2; i++) {
-            sum += p[i]; // uint8として足す
+            sum += p[i];
         }
         return sum;
     }
@@ -330,15 +303,14 @@ private:
     uint16_t calc_checksum_fb(USBFeedbackPacket* pkt) {
         uint16_t sum = 0;
         uint8_t* p = (uint8_t*)pkt;
-        // 末尾のchecksum(2byte)を除いて加算
         for(size_t i=0; i < sizeof(USBFeedbackPacket) - 2; i++) {
-            sum += p[i]; // uint8として足す
+            sum += p[i];
         }
         return sum;
     }
 
     // -----------------------------------------------------------------
-    // 動的パラメータ変更時のコールバック（修正版）
+    // 動的パラメータ変更時のコールバック
     // -----------------------------------------------------------------
     rcl_interfaces::msg::SetParametersResult param_callback(const std::vector<rclcpp::Parameter> &parameters) {
         rcl_interfaces::msg::SetParametersResult result;
@@ -346,18 +318,15 @@ private:
 
         for (const auto &param : parameters) {
             std::string name = param.get_name();
-            
-            // name は "motor0.speed_kp" のような形式
             if (name.find("motor") == 0) {
                 size_t dot_pos = name.find('.');
                 if (dot_pos != std::string::npos) {
                     try {
-                        int idx = std::stoi(name.substr(5, dot_pos - 5)); // "motor"の後の数字
-                        std::string p_name = name.substr(dot_pos + 1);    // "."の後の文字列
+                        int idx = std::stoi(name.substr(5, dot_pos - 5));
+                        std::string p_name = name.substr(dot_pos + 1);
 
                         if (idx >= 0 && idx < 16) {
-                            // 1. パラメータを構造体に上書き
-                            bool is_updated = false; // 更新があったかどうかのフラグ
+                            bool is_updated = false;
 
                             if (p_name == "speed_kp") { pid_configs_[idx].speed_kp = param.as_double(); is_updated = true; }
                             else if (p_name == "speed_ki") { pid_configs_[idx].speed_ki = param.as_double(); is_updated = true; }
@@ -370,16 +339,12 @@ private:
                             else if (p_name == "pos_i_limit") { pid_configs_[idx].position_i_limit = param.as_double(); is_updated = true; }
                             else if (p_name == "pos_limit") { pid_configs_[idx].position_output_limit = param.as_double(); is_updated = true; }
 
-                            // 2. ★修正ポイント！
-                            // マスク操作をやめて、ここで直接送信関数を呼ぶ！
                             if (is_updated) {
                                 send_pid_config(idx);
                                 RCLCPP_INFO(this->get_logger(), "Updated & Sent PID for Motor %d", idx + 1);
                             }
                         }
-                    } catch (...) {
-                        // 変換エラー等は無視
-                    }
+                    } catch (...) {}
                 }
             }
         }
@@ -387,14 +352,14 @@ private:
     }
 
     // -----------------------------------------------------------------
-    // ROS コールバック & Publish
+    // ROS コールバック
     // -----------------------------------------------------------------
     void cmd_callback(const robomas_interfaces::msg::RobomasPacket::SharedPtr msg) {
         for (const auto& cmd : msg->motors) {
             if (cmd.motor_id >= 1 && cmd.motor_id <= 16) {
                 int index = cmd.motor_id - 1; 
                 current_targets_[index].mode = cmd.mode;
-                current_targets_[index].target = cmd.target;
+                current_targets_[index].target = cmd.target; // ここにはmA (20000.0) が入る
             }
         }
     }
@@ -403,7 +368,7 @@ private:
         USBCtrlPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
         pkt.header = 0xA5A5;
-        pkt.command_id = CMD_SEND_CAN; // 0x03
+        pkt.command_id = CMD_SEND_CAN;
         
         pkt.payload.can_tx.can_id = msg->id;
         pkt.payload.can_tx.dlc = msg->dlc;
@@ -417,50 +382,97 @@ private:
         USBCtrlPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
         pkt.header = 0xA5A5;
-        
         if (msg->data) {
-            pkt.command_id = CMD_EMERGENCY_STOP; // 0x00
+            pkt.command_id = CMD_EMERGENCY_STOP;
             RCLCPP_WARN(this->get_logger(), "EMERGENCY STOP SENT");
         } else {
-            pkt.command_id = CMD_RESET_EMERGENCY; // 0x04 (定義あり！)
+            pkt.command_id = CMD_RESET_EMERGENCY;
             RCLCPP_INFO(this->get_logger(), "EMERGENCY RESET SENT");
         }
-        
         pkt.checksum = calc_checksum_ctrl(&pkt);
         write(serial_fd_, &pkt, sizeof(pkt));
     }
 
+    // -----------------------------------------------------------------
+    // Publish Feedback（★M3508スケール変換の実装箇所）
+    // -----------------------------------------------------------------
     void publish_feedback() {
         auto msg = robomas_interfaces::msg::RobomasFrame();
         msg.header.stamp = this->now();
         
-        msg.system_state = last_feedback_.system_state;       // 定義あり
-        msg.pid_configured_mask = last_feedback_.pid_configured_mask; // 定義あり
+        msg.system_state = last_feedback_.system_state;
+        msg.pid_configured_mask = last_feedback_.pid_configured_mask;
         
         for(int i=0; i<16; i++) {
             msg.angle[i]    = last_feedback_.motors[i].angle;
             msg.velocity[i] = last_feedback_.motors[i].velocity;
-            msg.torque[i]   = (float)last_feedback_.motors[i].torque; 
-            msg.temp[i]     = (float)last_feedback_.motors[i].temp;   
+            msg.temp[i]     = (float)last_feedback_.motors[i].temp;
+
+            // ★トルク値の変換
+            // M2006 (temp == 0): 生値 (±10000) = mA
+            // M3508 (temp != 0): 生値 (±16384) -> ±20000 mA に変換
+            float raw_torque = (float)last_feedback_.motors[i].torque;
+            uint8_t temp = last_feedback_.motors[i].temp;
+
+            if (temp != 0) {
+                // M3508: 16384 を 20000 に引き伸ばす (係数: 1.2207)
+                msg.torque[i] = raw_torque * (20000.0f / 16384.0f);
+            } else {
+                // M2006: そのまま
+                msg.torque[i] = raw_torque;
+            }
         }
         pub_feedback_->publish(msg);
     }
 
+    // -----------------------------------------------------------------
+    // Display Loop（未接続判定ロジックを追加）
+    // -----------------------------------------------------------------
     void display_loop() {
         printf("\033[H\033[J");
         printf("=== Robomas Controller (State: %d) ===\n", last_feedback_.system_state);
         printf("PID Mask: %04X (Target: FFFF)\n", current_pid_mask_);
-        printf("ID | Mode | Target |  FB Vel  |  FB Pos  | Torque | Temp \n");
-        printf("---|------|--------|----------|----------|--------|------\n");
+        
+        printf("ID | Type  | Mode | Target |  FB Vel  |  FB Pos  | Torque(mA) | Temp \n");
+        printf("---|-------|------|--------|----------|----------|------------|------\n");
+        
         for(int i=0; i<16; i++) {
-             printf("%2d |  %d   | %6.1f | %8.1f | %8.1f | %6d | %3d \n", 
+            float raw_torque = (float)last_feedback_.motors[i].torque;
+            uint8_t temp = last_feedback_.motors[i].temp;
+            float velocity = last_feedback_.motors[i].velocity;
+            float angle = last_feedback_.motors[i].angle;
+            
+            float display_torque = raw_torque;
+            
+            // ★判定ロジック
+            const char* model_name;
+
+            // データが全て完全に0なら「未接続」とみなす
+            // (M2006でも手で少し回せば angle が0以外になるので認識されます)
+            bool is_disconnected = (temp == 0 && raw_torque == 0 && velocity == 0.0f && angle == 0.0f);
+
+            if (temp > 0) {
+                model_name = "M3508"; // 温度があれば絶対M3508
+                // M3508のみトルクをmA換算
+                display_torque = raw_torque * (20000.0f / 16384.0f);
+            } 
+            else if (!is_disconnected) {
+                model_name = "M2006"; // 温度0だけど、何かデータが来てるならM2006
+            } 
+            else {
+                model_name = " --- "; // 全部0なら未接続扱い
+            }
+
+            // 表示 (未接続なら数値も薄くしたいところですが、まずは名前だけで)
+             printf("%2d | %s |  %d   | %6.1f | %8.1f | %8.1f | %10.0f | %3d \n", 
                 i+1, 
+                model_name, 
                 current_targets_[i].mode, 
                 current_targets_[i].target,
-                last_feedback_.motors[i].velocity, 
-                last_feedback_.motors[i].angle,
-                last_feedback_.motors[i].torque,
-                last_feedback_.motors[i].temp
+                velocity, 
+                angle,
+                display_torque, 
+                temp
             );
         }
 
