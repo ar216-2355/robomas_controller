@@ -338,7 +338,7 @@ private:
     }
 
     // -----------------------------------------------------------------
-    // 動的パラメータ変更時のコールバック
+    // 動的パラメータ変更時のコールバック（修正版）
     // -----------------------------------------------------------------
     rcl_interfaces::msg::SetParametersResult param_callback(const std::vector<rclcpp::Parameter> &parameters) {
         rcl_interfaces::msg::SetParametersResult result;
@@ -356,23 +356,26 @@ private:
                         std::string p_name = name.substr(dot_pos + 1);    // "."の後の文字列
 
                         if (idx >= 0 && idx < 16) {
-                            // パラメータを構造体に上書き
-                            if (p_name == "speed_kp") pid_configs_[idx].speed_kp = param.as_double();
-                            else if (p_name == "speed_ki") pid_configs_[idx].speed_ki = param.as_double();
-                            else if (p_name == "speed_kd") pid_configs_[idx].speed_kd = param.as_double();
-                            else if (p_name == "speed_i_limit") pid_configs_[idx].speed_i_limit = param.as_double();
-                            else if (p_name == "speed_limit") pid_configs_[idx].speed_output_limit = param.as_double();
-                            else if (p_name == "pos_kp") pid_configs_[idx].position_kp = param.as_double();
-                            else if (p_name == "pos_ki") pid_configs_[idx].position_ki = param.as_double();
-                            else if (p_name == "pos_kd") pid_configs_[idx].position_kd = param.as_double();
-                            else if (p_name == "pos_i_limit") pid_configs_[idx].position_i_limit = param.as_double();
-                            else if (p_name == "pos_limit") pid_configs_[idx].position_output_limit = param.as_double();
+                            // 1. パラメータを構造体に上書き
+                            bool is_updated = false; // 更新があったかどうかのフラグ
 
-                            // ★ここが超重要！ 更新されたモーターのマスクのビットを「0」に戻す
-                            // これにより、メインループが自動的にSTM32へ再設定パケット(CMD_SET_PID)を送ります
-                            current_pid_mask_ &= ~(1 << idx);
-                            
-                            // (printfの表示を崩さないため、ここはあえてログを出さないか、DEBUGにしておく)
+                            if (p_name == "speed_kp") { pid_configs_[idx].speed_kp = param.as_double(); is_updated = true; }
+                            else if (p_name == "speed_ki") { pid_configs_[idx].speed_ki = param.as_double(); is_updated = true; }
+                            else if (p_name == "speed_kd") { pid_configs_[idx].speed_kd = param.as_double(); is_updated = true; }
+                            else if (p_name == "speed_i_limit") { pid_configs_[idx].speed_i_limit = param.as_double(); is_updated = true; }
+                            else if (p_name == "speed_limit") { pid_configs_[idx].speed_output_limit = param.as_double(); is_updated = true; }
+                            else if (p_name == "pos_kp") { pid_configs_[idx].position_kp = param.as_double(); is_updated = true; }
+                            else if (p_name == "pos_ki") { pid_configs_[idx].position_ki = param.as_double(); is_updated = true; }
+                            else if (p_name == "pos_kd") { pid_configs_[idx].position_kd = param.as_double(); is_updated = true; }
+                            else if (p_name == "pos_i_limit") { pid_configs_[idx].position_i_limit = param.as_double(); is_updated = true; }
+                            else if (p_name == "pos_limit") { pid_configs_[idx].position_output_limit = param.as_double(); is_updated = true; }
+
+                            // 2. ★修正ポイント！
+                            // マスク操作をやめて、ここで直接送信関数を呼ぶ！
+                            if (is_updated) {
+                                send_pid_config(idx);
+                                RCLCPP_INFO(this->get_logger(), "Updated & Sent PID for Motor %d", idx + 1);
+                            }
                         }
                     } catch (...) {
                         // 変換エラー等は無視

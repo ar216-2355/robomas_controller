@@ -5,18 +5,17 @@ robomas_node:
     publish_rate: 100 # Hz (10ms)
     
     # PID設定 (motor0 〜 motor15)
-    # ここに16台分書きます
     motor0:
-      speed_kp: 8.0
-      speed_ki: 40.0
-      speed_kd: 0.01
-      speed_i_limit: 1000.0
-      speed_limit: 10000.0
-      pos_kp: 10.0
-      pos_ki: 1.0
-      pos_kd: 0.01
-      pos_i_limit: 0.0
-      pos_limit: 1000.0
+      speed_kp: 8.0             # ロボマス１の速度PID制御のPゲイン
+      speed_ki: 40.0            # ロボマス１の速度PID制御のIゲイン
+      speed_kd: 0.01            # ロボマス１の速度PID制御のDゲイン
+      speed_i_limit: 1000.0     # ロボマス１の速度PID制御のI項の絶対値の上限
+      speed_limit: 10000.0      # ロボマス１の速度PID制御の出力の最大値（要するにロボマスが出力できる電流の最大値で、名前から推察できてしまう「速度の最大値」という意味ではない）
+      pos_kp: 10.0              # ロボマス１の位置PID制御のPゲイン
+      pos_ki: 1.0               # ロボマス１の位置PID制御のIゲイン
+      pos_kd: 0.01              # ロボマス１の位置PID制御のDゲイン
+      pos_i_limit: 0.0          # ロボマス１の位置PID制御のI項の絶対値の上限
+      pos_limit: 1000.0         # ロボマス１の位置PID制御の出力の最大値（要するにロボマスが出力できる速度の最大値で、名前から推察できてしまう「位置の最大値」という意味ではない）
     
     motor1:
       speed_kp: 8.0
