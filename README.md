@@ -33,9 +33,10 @@ ros2 topic pub --once /robomas/cmd robomas_interfaces/msg/RobomasPacket "{motors
 ```bash
 ros2 topic pub --once /robomas/cmd robomas_interfaces/msg/RobomasPacket "{
   motors: [
-    {motor_id: 1, mode: 0, target: 300.0},
-    {motor_id: 2, mode: 2, target: -500.0},
-    {motor_id: 3, mode: 1, target: 30000.0}
+    {motor_id: 1, mode: 2, target: 1000.0},
+    {motor_id: 2, mode: 2, target: 1000.0},
+    {motor_id: 3, mode: 2, target: -1000.0},
+    {motor_id: 4, mode: 2, target: -1000.0}
   ]
 }"
 ```
