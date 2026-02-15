@@ -27,7 +27,7 @@ robomas_node:
       pos_ki: 1.0
       pos_kd: 0.01
       pos_i_limit: 100.0
-      pos_limit: 1000.0
+      pos_limit: 1500.0
 
     motor2:
       speed_kp: 8.0
