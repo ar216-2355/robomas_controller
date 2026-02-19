@@ -24,6 +24,11 @@ class RobomasBridge : public rclcpp::Node {
 public:
     RobomasBridge() : Node("robomas_node") {
         RCLCPP_INFO(this->get_logger(), "Sizeof FB Packet: %lu", sizeof(USBFeedbackPacket));
+
+        // --- カウンタの初期化 ---
+        packets_received_ = 0;
+        checksum_errors_ = 0;
+        last_packet_time_ = this->now();
         
         // --- パラメータ設定 ---
         this->declare_parameter("port_name", "/dev/ttyACM0");
@@ -60,6 +65,11 @@ public:
     }
 
 private:
+    // --- 追加のメンバ変数 ---
+    uint64_t packets_received_;   // 正常に受信できた数
+    uint64_t checksum_errors_;    // チェックサムで弾かれた数
+    rclcpp::Time last_packet_time_; // 最後にパケットを受信した時刻
+
     int serial_fd_ = -1;
     std::vector<uint8_t> rx_buf_;
     
@@ -213,8 +223,15 @@ private:
                     last_feedback_ = pkt;
                     current_pid_mask_ = pkt.pid_configured_mask;
                     publish_feedback();
+                    
+                    // 成功カウントと時刻更新
+                    packets_received_++;
+                    last_packet_time_ = this->now();
+                    
                     rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + pkt_size);
                 } else {
+                    // チェックサムエラー
+                    checksum_errors_++;
                     rx_buf_.erase(rx_buf_.begin());
                 }
             } 
@@ -430,8 +447,21 @@ private:
     // -----------------------------------------------------------------
     void display_loop() {
         printf("\033[H\033[J");
-        printf("=== Robomas Controller (State: %d) ===\n", last_feedback_.system_state);
-        printf("PID Mask: %04X (Target: FFFF)\n", current_pid_mask_);
+
+        // 通信状態の計算
+        double dt = (this->now() - last_packet_time_).seconds();
+        const char* conn_status = (dt < 0.1) ? "\033[1;32mONLINE\033[0m" : "\033[1;31mOFFLINE (Timeout)\033[0m";
+        double error_rate = (packets_received_ + checksum_errors_ > 0) 
+            ? (double)checksum_errors_ / (packets_received_ + checksum_errors_) * 100.0 : 0.0;
+
+
+        printf("=== Robomas Controller Stats ===\n");
+        printf("Status: %s  |  Last Packet: %.3f sec ago\n", conn_status, dt);
+        printf("Received: %lu  |  Checksum Errors: %lu (\033[1;33m%.2f%%\033[0m)\n", 
+                packets_received_, checksum_errors_, error_rate);
+        printf("-------------------------------------------------------------\n");
+        
+        printf("System State: %d | PID Mask: %04X\n", last_feedback_.system_state, current_pid_mask_);
         
         printf("ID | Type  | Mode | Target |  FB Vel  |  FB Pos  | Torque(mA) | Temp \n");
         printf("---|-------|------|--------|----------|----------|------------|------\n");
