@@ -243,16 +243,24 @@ private:
                 USBCanForwardPacket pkt;
                 memcpy(&pkt, rx_buf_.data(), pkt_size);
                 
-                auto msg = robomas_interfaces::msg::CanFrame();
-                msg.id = pkt.can_id;
-                msg.dlc = pkt.dlc;
-                for(int i=0; i<8; i++) msg.data[i] = pkt.data[i];
-                pub_can_rx_->publish(msg);
+                // ★追加: チェックサムの確認
+                if (calc_checksum_can(&pkt) == pkt.checksum) {
+                    auto msg = robomas_interfaces::msg::CanFrame();
+                    msg.id = pkt.can_id;
+                    msg.dlc = pkt.dlc;
+                    for(int i=0; i<8; i++) msg.data[i] = pkt.data[i];
+                    pub_can_rx_->publish(msg);
 
-                rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + pkt_size);
-            }
-            else {
-                rx_buf_.erase(rx_buf_.begin()); 
+                    // 統計情報の更新 (CANパケットも正常受信としてカウント)
+                    packets_received_++;
+                    last_packet_time_ = this->now();
+
+                    rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + pkt_size);
+                } else {
+                    // チェックサムエラー
+                    checksum_errors_++;
+                    rx_buf_.erase(rx_buf_.begin()); // 1バイトだけ進めて再同期
+                }
             }
         }
         if (rx_buf_.size() > 4096) rx_buf_.clear();
@@ -321,6 +329,15 @@ private:
         uint16_t sum = 0;
         uint8_t* p = (uint8_t*)pkt;
         for(size_t i=0; i < sizeof(USBFeedbackPacket) - 2; i++) {
+            sum += p[i];
+        }
+        return sum;
+    }
+
+    uint16_t calc_checksum_can(USBCanForwardPacket* pkt) {
+        uint16_t sum = 0;
+        uint8_t* p = (uint8_t*)pkt;
+        for(size_t i=0; i < sizeof(USBCanForwardPacket) - 2; i++) {
             sum += p[i];
         }
         return sum;
