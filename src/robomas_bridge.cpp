@@ -471,6 +471,14 @@ private:
         double error_rate = (packets_received_ + checksum_errors_ > 0) 
             ? (double)checksum_errors_ / (packets_received_ + checksum_errors_) * 100.0 : 0.0;
 
+        // --- System State の文字列化と色付け ---
+        const char* state_str;
+        switch (last_feedback_.system_state) {
+            case 0: state_str = "\033[1;31mEMERGENCY\033[0m"; break; // 赤色
+            case 1: state_str = "\033[1;33mREADY\033[0m";     break; // 黄色
+            case 2: state_str = "\033[1;32mDRIVE\033[0m";     break; // 緑色
+            default: state_str = "UNKNOWN"; break;
+        }
 
         printf("=== Robomas Controller Stats ===\n");
         printf("Status: %s  |  Last Packet: %.3f sec ago\n", conn_status, dt);
@@ -478,9 +486,9 @@ private:
                 packets_received_, checksum_errors_, error_rate);
         printf("-------------------------------------------------------------\n");
         
-        printf("System State: %d | PID Mask: %04X\n", last_feedback_.system_state, current_pid_mask_);
+        // System State の表示箇所を変更
+        printf("System State: %s | PID Mask: %04X\n", state_str, current_pid_mask_);
         
-        // ヘッダーの幅を微調整 (Modeの列を少し広げました)
         printf("ID | Type  |    Mode    | Target |  FB Vel  |  FB Pos  | Current(mA) | Temp \n");
         printf("---|-------|------------|--------|----------|----------|------------|------\n");
         
@@ -492,7 +500,6 @@ private:
             
             float display_current = raw_current;
             
-            // ★モデル判定ロジック
             const char* model_name;
             bool is_disconnected = (temp == 0 && raw_current == 0 && velocity == 0.0f && angle == 0.0f);
 
@@ -507,7 +514,6 @@ private:
                 model_name = " --- ";
             }
 
-            // ★モード名の変換ロジック
             const char* mode_name;
             switch (current_targets_[i].mode) {
                 case 0:  mode_name = "CURRENT "; break;
@@ -517,7 +523,6 @@ private:
                 default: mode_name = "UNKNOWN "; break;
             }
 
-            // 表示 (Modeの表示幅を %-8s に設定して揃えています)
              printf("%2d | %s |  %s  | %6.1f | %8.1f | %8.1f | %10.0f | %3d \n", 
                 i+1, 
                 model_name, 
