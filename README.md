@@ -80,5 +80,22 @@ pos_i_limit: 100
 pos_limit: 1000.0
 ```
 
+# USBポートについて
+ターミナルにて
+```bash
+echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", SYMLINK+="robomas"' | sudo tee /etc/udev/rules.d/99-robomas.rules
+```
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+確認
+```bash
+ls -l /dev/robomas
+```
+結果として lrwxrwxrwx 1 root root ... /dev/robomas -> ttyACM0 のような表示が出れば、ポートの自動認識は成功している。
+
 # 備考
 M3508はユーザーからもらった電流値[mA]を生値（例えば20Aなら16384）に変換している。フィードバックの電流値も同様である。

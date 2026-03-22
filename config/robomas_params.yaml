@@ -1,6 +1,6 @@
 robomas_node:
   ros__parameters:
-    port_name: "/dev/ttyACM0"
+    port_name: "/dev/robomas"
     baud_rate: 115200 # USB CDCなら無視されるが念のため
     publish_rate: 100 # Hz (10ms)
     
