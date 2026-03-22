@@ -445,15 +445,15 @@ private:
             // ★トルク値の変換
             // M2006 (temp == 0): 生値 (±10000) = mA
             // M3508 (temp != 0): 生値 (±16384) -> ±20000 mA に変換
-            float raw_torque = (float)last_feedback_.motors[i].torque;
+            float raw_current = (float)last_feedback_.motors[i].current;
             uint8_t temp = last_feedback_.motors[i].temp;
 
             if (temp != 0) {
                 // M3508: 16384 を 20000 に引き伸ばす (係数: 1.2207)
-                msg.torque[i] = raw_torque * (20000.0f / 16384.0f);
+                msg.current[i] = raw_current * (20000.0f / 16384.0f);
             } else {
                 // M2006: そのまま
-                msg.torque[i] = raw_torque;
+                msg.current[i] = raw_current;
             }
         }
         pub_feedback_->publish(msg);
@@ -480,45 +480,52 @@ private:
         
         printf("System State: %d | PID Mask: %04X\n", last_feedback_.system_state, current_pid_mask_);
         
-        printf("ID | Type  | Mode | Target |  FB Vel  |  FB Pos  | Torque(mA) | Temp \n");
-        printf("---|-------|------|--------|----------|----------|------------|------\n");
+        // ヘッダーの幅を微調整 (Modeの列を少し広げました)
+        printf("ID | Type  |    Mode    | Target |  FB Vel  |  FB Pos  | Current(mA) | Temp \n");
+        printf("---|-------|------------|--------|----------|----------|------------|------\n");
         
         for(int i=0; i<16; i++) {
-            float raw_torque = (float)last_feedback_.motors[i].torque;
+            float raw_current = (float)last_feedback_.motors[i].current;
             uint8_t temp = last_feedback_.motors[i].temp;
             float velocity = last_feedback_.motors[i].velocity;
             float angle = last_feedback_.motors[i].angle;
             
-            float display_torque = raw_torque;
+            float display_current = raw_current;
             
-            // ★判定ロジック
+            // ★モデル判定ロジック
             const char* model_name;
-
-            // データが全て完全に0なら「未接続」とみなす
-            // (M2006でも手で少し回せば angle が0以外になるので認識されます)
-            bool is_disconnected = (temp == 0 && raw_torque == 0 && velocity == 0.0f && angle == 0.0f);
+            bool is_disconnected = (temp == 0 && raw_current == 0 && velocity == 0.0f && angle == 0.0f);
 
             if (temp > 0) {
-                model_name = "M3508"; // 温度があれば絶対M3508
-                // M3508のみトルクをmA換算
-                display_torque = raw_torque * (20000.0f / 16384.0f);
+                model_name = "M3508";
+                display_current = raw_current * (20000.0f / 16384.0f);
             } 
             else if (!is_disconnected) {
-                model_name = "M2006"; // 温度0だけど、何かデータが来てるならM2006
+                model_name = "M2006";
             } 
             else {
-                model_name = " --- "; // 全部0なら未接続扱い
+                model_name = " --- ";
             }
 
-            // 表示 (未接続なら数値も薄くしたいところですが、まずは名前だけで)
-             printf("%2d | %s |  %d   | %6.1f | %8.1f | %8.1f | %10.0f | %3d \n", 
+            // ★モード名の変換ロジック
+            const char* mode_name;
+            switch (current_targets_[i].mode) {
+                case 0:  mode_name = "CURRENT "; break;
+                case 1:  mode_name = "SPEED   "; break;
+                case 2:  mode_name = "POSITION"; break;
+                case 3:  mode_name = "DISABLE "; break;
+                default: mode_name = "UNKNOWN "; break;
+            }
+
+            // 表示 (Modeの表示幅を %-8s に設定して揃えています)
+             printf("%2d | %s |  %s  | %6.1f | %8.1f | %8.1f | %10.0f | %3d \n", 
                 i+1, 
                 model_name, 
-                current_targets_[i].mode, 
+                mode_name, 
                 current_targets_[i].target,
                 velocity, 
                 angle,
-                display_torque, 
+                display_current, 
                 temp
             );
         }

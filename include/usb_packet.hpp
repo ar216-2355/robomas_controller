@@ -69,7 +69,7 @@ typedef struct {
 typedef struct {
     float   angle;
     float   velocity;
-    int16_t torque;
+    int16_t current;
     uint8_t temp;
 } MotorFeedbackUnit; // 11 bytes (これがズレの原因でした！)
 
